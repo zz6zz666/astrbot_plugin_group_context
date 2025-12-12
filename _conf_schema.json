@@ -1,0 +1,47 @@
+{
+  "group_message_max_cnt": {
+    "type": "int",
+    "description": "群聊消息最大记录条数",
+    "default": 300
+  },
+  "image_caption": {
+    "type": "bool",
+    "description": "是否启用图片描述功能",
+    "default": false
+  },
+  "image_caption_prompt": {
+    "type": "str",
+    "description": "图片描述提示词",
+    "default": "请描述这张图片的内容"
+  },
+  "image_caption_provider_id": {
+    "type": "str",
+    "description": "用于图片描述的 Provider ID (留空则使用当前正在使用的 Provider)",
+    "default": ""
+  },
+  "enable_active_reply": {
+    "type": "bool",
+    "description": "是否启用主动回复功能",
+    "default": false
+  },
+  "ar_method": {
+    "type": "str",
+    "description": "主动回复触发方式 (possibility_reply: 概率回复)",
+    "default": "possibility_reply"
+  },
+  "ar_possibility": {
+    "type": "float",
+    "description": "主动回复概率 (0.0-1.0)",
+    "default": 0.1
+  },
+  "ar_prompt": {
+    "type": "str",
+    "description": "主动回复自定义提示词 (可使用 {chat_history} 和 {message} 变量)",
+    "default": ""
+  },
+  "ar_whitelist": {
+    "type": "list",
+    "description": "主动回复白名单 (群号或用户ID列表,留空表示不限制)",
+    "default": []
+  }
+}
