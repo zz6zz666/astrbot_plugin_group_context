@@ -529,17 +529,63 @@ class GroupContextPlugin(Star):
     @filter.on_llm_request(priority=-10000)
     async def on_req_llm_clear_prompt(self, event: AstrMessageEvent, req: ProviderRequest):
         """在所有插件处理完后，将prompt清空，并清除上下文中空的user字段"""
+        # 只有群聊场景下才执行操作
+        if event.get_message_type() != MessageType.GROUP_MESSAGE:
+            return
+        
         # 清空prompt，避免重复内容
         req.prompt = ""
+
+    @filter.after_message_sent()
+    async def after_message_sent(self, event: AstrMessageEvent):
+        """消息发送后处理，清除上下文中空的user字段"""
+        # 只有群聊场景下才执行操作
+        if event.get_message_type() != MessageType.GROUP_MESSAGE:
+            return
+            
+        # 获取当前对话的unified_msg_origin
+        unified_msg_origin = event.unified_msg_origin
         
-        # 清除上下文中空的user字段
-        if req.contexts:
-            req.contexts = [
-                ctx for ctx in req.contexts 
-                if not (ctx.get("role") == "user" and 
-                       (ctx.get("content") == "" or 
-                        (isinstance(ctx.get("content"), list) and not ctx.get("content"))))
-            ]
+        try:
+            # 获取当前对话ID
+            conversation_id = await self.context.conversation_manager.get_curr_conversation_id(unified_msg_origin)
+            if not conversation_id:
+                return
+            
+            # 获取对话对象
+            conversation = await self.context.conversation_manager.get_conversation(
+                unified_msg_origin,
+                conversation_id
+            )
+            if not conversation:
+                return
+            
+            # 解析对话历史
+            import json
+            history = json.loads(conversation.history)
+            
+            # 清除上下文中空的user字段
+            if history:
+                cleaned_history = [
+                    ctx for ctx in history 
+                    if not (ctx.get("role") == "user" and 
+                           (ctx.get("content") == "" or 
+                            (isinstance(ctx.get("content"), list) and not ctx.get("content"))))
+                ]
+                
+                # 如果历史发生了变化，更新对话
+                if len(cleaned_history) != len(history):
+                    await self.context.conversation_manager.update_conversation(
+                        unified_msg_origin,
+                        conversation_id,
+                        cleaned_history
+                    )
+                    logger.debug(f"清除了对话 {conversation_id} 中的空user字段")
+                    
+        except Exception as e:
+            logger.error(f"after_message_sent 处理失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     async def terminate(self):
         """插件卸载时的清理工作"""
