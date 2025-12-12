@@ -12,6 +12,7 @@ from astrbot.api import logger, AstrBotConfig
 from astrbot.api.message_components import At, Image, Plain, Forward, Reply
 from astrbot.api.platform import MessageType
 import astrbot.api.message_components as Comp
+from astrbot.core.utils.io import download_image_by_url
 
 try:
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
@@ -43,12 +44,14 @@ class GroupContextPlugin(Star):
         self.enable_image_recognition = bool(self.get_cfg("enable_image_recognition", True))
         self.image_caption = bool(self.get_cfg("image_caption", False))
         self.image_caption_provider_id = self.get_cfg("image_caption_provider_id", "")
+        self.image_carry_rounds = int(self.get_cfg("image_carry_rounds", 1))
 
         logger.info("群聊上下文感知插件已初始化")
         logger.info(f"合并转发分析: {'已启用' if self.enable_forward_analysis else '已禁用'}")
         logger.info(f"图片识别: {'已启用' if self.enable_image_recognition else '已禁用'}")
         if self.enable_image_recognition:
             logger.info(f"图片处理模式: {'转述描述' if self.image_caption else 'URL注入'}")
+            logger.info(f"图片携带轮数: {self.image_carry_rounds}")
 
     def get_cfg(self, key: str, default=None):
         """从插件配置中获取配置项"""
@@ -323,8 +326,13 @@ class GroupContextPlugin(Star):
                                                     if full_text:
                                                         current_message_content.append({"type": "text", "text": full_text})
                                                         full_text = ""  # 重置当前文本
-                                                    # 保留图片原始位置，使用OpenAI格式
-                                                    current_message_content.append({"type": "image_url", "image_url": {"url": img_url}})
+                                                    # 将图片转换为base64编码，使用OpenAI格式
+                                                    image_data = await self._encode_image_bs64(img_url)
+                                                    if image_data:
+                                                        current_message_content.append({"type": "image_url", "image_url": {"url": image_data}})
+                                                    else:
+                                                        # 如果转换失败，使用[图片]占位符
+                                                        full_text += " [图片]"
                                             else:
                                                 # 关闭视觉开关时，使用[图片]占位符，不换行
                                                 full_text += " [图片]"
@@ -370,8 +378,13 @@ class GroupContextPlugin(Star):
                             if full_text:
                                 current_message_content.append({"type": "text", "text": full_text})
                                 full_text = ""  # 重置当前文本
-                            # 保留图片原始位置，使用OpenAI格式
-                            current_message_content.append({"type": "image_url", "image_url": {"url": url}})
+                            # 将图片转换为base64编码，使用OpenAI格式
+                            image_data = await self._encode_image_bs64(url)
+                            if image_data:
+                                current_message_content.append({"type": "image_url", "image_url": {"url": image_data}})
+                            else:
+                                # 如果转换失败，使用[图片]占位符
+                                full_text += " [图片]"
                     else:
                         # 关闭视觉开关时，使用[图片]占位符，保持在同一行
                         full_text += " [图片]"
@@ -390,6 +403,41 @@ class GroupContextPlugin(Star):
             
             # 调试日志
             logger.debug(f"群聊上下文 | {event.unified_msg_origin} | 添加了一条包含 {len(current_message_content)} 个组件的消息")
+
+    async def _encode_image_bs64(self, image_url: str) -> str:
+        """将图片转换为 base64 编码
+        
+        支持的格式：
+        1. base64://... 格式的 base64 数据
+        2. http/https 开头的网络图片 URL
+        3. file:/// 开头的本地文件路径
+        4. 直接的本地文件路径
+        """
+        try:
+            import base64
+            
+            if image_url.startswith("base64://"):
+                return image_url.replace("base64://", "data:image/jpeg;base64,")
+            elif image_url.startswith("http"):
+                # 下载网络图片
+                image_path = await download_image_by_url(image_url)
+                with open(image_path, "rb") as f:
+                    image_bs64 = base64.b64encode(f.read()).decode("utf-8")
+                return "data:image/jpeg;base64," + image_bs64
+            elif image_url.startswith("file:///"):
+                # 本地文件路径
+                image_path = image_url.replace("file:///", "")
+                with open(image_path, "rb") as f:
+                    image_bs64 = base64.b64encode(f.read()).decode("utf-8")
+                return "data:image/jpeg;base64," + image_bs64
+            else:
+                # 直接的本地文件路径
+                with open(image_url, "rb") as f:
+                    image_bs64 = base64.b64encode(f.read()).decode("utf-8")
+                return "data:image/jpeg;base64," + image_bs64
+        except Exception as e:
+            logger.error(f"将图片转换为base64失败: {image_url}, 错误: {e}")
+            return ""
 
     async def get_image_caption(self, image_url: str, image_caption_provider_id: str) -> str:
         """获取图片描述"""
@@ -476,6 +524,59 @@ class GroupContextPlugin(Star):
             # 删除cut_index之前的所有消息
             req.contexts = req.contexts[cut_index:]
         
+        # 过滤上下文消息，只保留最后N个user消息中的图片
+        if req.contexts and self.image_carry_rounds > 0:
+            # 找出所有user角色的消息索引
+            user_indices = [i for i, ctx in enumerate(req.contexts) if ctx.get("role") == "user"]
+            
+            # 如果user消息数量超过image_carry_rounds，只保留最后N个
+            if len(user_indices) > self.image_carry_rounds:
+                # 需要保留图片的user消息索引
+                keep_indices = user_indices[-self.image_carry_rounds:]
+                
+                # 遍历所有user消息
+                for i in user_indices:
+                    # 如果不是需要保留的user消息，将图片替换为[图片]占位符
+                    if i not in keep_indices:
+                        ctx = req.contexts[i]
+                        if isinstance(ctx.get("content"), list):
+                            # 创建新的content列表
+                            new_content = []
+                            current_text = None
+                            
+                            for item in ctx["content"]:
+                                if item["type"] == "text":
+                                    text = item["text"]
+                                    
+                                    # 检查是否为新的时间戳（以[开头）
+                                    if text.startswith("["):
+                                        # 如果是新的时间戳，保存当前文本（如果有）
+                                        if current_text:
+                                            new_content.append({"type": "text", "text": current_text})
+                                        # 开始新的文本块
+                                        current_text = text
+                                    else:
+                                        # 如果不是新的时间戳，合并到当前文本
+                                        if current_text:
+                                            current_text += text
+                                        else:
+                                            # 如果没有当前文本，直接创建新的
+                                            current_text = text
+                                elif item["type"] == "image_url":
+                                    # 如果是图片，将[图片]追加到当前文本
+                                    if current_text:
+                                        current_text += " [图片]"
+                                    else:
+                                        # 如果没有当前文本，创建一个新的
+                                        current_text = " [图片]"
+                            
+                            # 保存最后一个文本块
+                            if current_text:
+                                new_content.append({"type": "text", "text": current_text})
+                            
+                            # 更新为新的content列表
+                            ctx["content"] = new_content
+        
         # 获取配置的提示词
         is_active_reply = event.unified_msg_origin in self.active_reply_sessions
         if is_active_reply:
@@ -531,61 +632,34 @@ class GroupContextPlugin(Star):
         """在所有插件处理完后，将prompt清空，并清除上下文中空的user字段"""
         # 只有群聊场景下才执行操作
         if event.get_message_type() != MessageType.GROUP_MESSAGE:
+            logger.debug(f"非群聊消息，不执行清空prompt操作")
             return
         
-        # 清空prompt，避免重复内容
+        # 清空prompt，避免请求体包含重复内容
         req.prompt = ""
+        
+        # 清除上下文中空的user字段
+        if req.contexts:
+            req.contexts = [
+                ctx for ctx in req.contexts 
+                if not (ctx.get("role") == "user" and 
+                       (ctx.get("content") == "" or 
+                        (isinstance(ctx.get("content"), list) and not ctx.get("content"))))
+            ]
 
-    @filter.after_message_sent()
-    async def after_message_sent(self, event: AstrMessageEvent):
-        """消息发送后处理，清除上下文中空的user字段"""
+
+    @filter.on_llm_response(priority=-10000)
+    async def save_memories(self, event: AstrMessageEvent, resp: LLMResponse):
         # 只有群聊场景下才执行操作
         if event.get_message_type() != MessageType.GROUP_MESSAGE:
+            logger.debug(f"非群聊消息，不执行清空prompt操作")
             return
-            
-        # 获取当前对话的unified_msg_origin
-        unified_msg_origin = event.unified_msg_origin
         
-        try:
-            # 获取当前对话ID
-            conversation_id = await self.context.conversation_manager.get_curr_conversation_id(unified_msg_origin)
-            if not conversation_id:
-                return
-            
-            # 获取对话对象
-            conversation = await self.context.conversation_manager.get_conversation(
-                unified_msg_origin,
-                conversation_id
-            )
-            if not conversation:
-                return
-            
-            # 解析对话历史
-            import json
-            history = json.loads(conversation.history)
-            
-            # 清除上下文中空的user字段
-            if history:
-                cleaned_history = [
-                    ctx for ctx in history 
-                    if not (ctx.get("role") == "user" and 
-                           (ctx.get("content") == "" or 
-                            (isinstance(ctx.get("content"), list) and not ctx.get("content"))))
-                ]
-                
-                # 如果历史发生了变化，更新对话
-                if len(cleaned_history) != len(history):
-                    await self.context.conversation_manager.update_conversation(
-                        unified_msg_origin,
-                        conversation_id,
-                        cleaned_history
-                    )
-                    logger.debug(f"清除了对话 {conversation_id} 中的空user字段")
-                    
-        except Exception as e:
-            logger.error(f"after_message_sent 处理失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        # 再次prompt，防止其他插件在请求前保存了prompt并在请求后又注入进去
+        req = event.get_extra("provider_request")
+        if req is not None:
+            req.prompt = ""
+
 
     async def terminate(self):
         """插件卸载时的清理工作"""

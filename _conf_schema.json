@@ -4,6 +4,11 @@
     "description": "是否启用群聊图片识别（关闭后完全忽略所有图片，包括合并转发中的图片）",
     "default": false
   },
+  "image_carry_rounds": {
+    "type": "int",
+    "description": "控制携带图片的轮数，只保留最后N轮用户消息中的图片，将前面的图片转换为[图片]占位符，用于节省请求token",
+    "default": 1
+  },
   "image_caption": {
     "type": "bool",
     "description": "是否启用图片描述功能（需先启用图片识别。开启后使用AI模型描述图片内容，关闭则以URL形式注入）\n描述图片的效果不如原生图片识别，建议仅在无法使用图片识别的聊天大模型时开启",
