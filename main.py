@@ -338,15 +338,10 @@ class GroupContextPlugin(Star):
                                         # @ 也作为文本处理
                                         full_text += f"[At: {seg_data.get('qq', '')}]"
                                     elif seg_type == "image":
-                                        # 遇到图片时，先将之前的文本添加到列表（如果有）
-                                        if full_text:
-                                            current_message_content.append({"type": "text", "text": full_text})
-                                            full_text = ""  # 重置当前文本
-                                        
-                                        if self.enable_image_recognition:
-                                            img_url = self._extract_image_url(seg_data)
-                                            if img_url:
-                                                if self.image_caption and self.image_caption_provider_id:
+                                        img_url = self._extract_image_url(seg_data)
+                                        if img_url:
+                                            if self.enable_image_recognition:
+                                                if self.image_caption:
                                                     try:
                                                         caption = await self.get_image_caption(img_url, self.image_caption_provider_id)
                                                         # 图片描述作为文本处理
@@ -355,8 +350,15 @@ class GroupContextPlugin(Star):
                                                         logger.error(f"获取图片描述失败: {e}")
                                                         full_text += " [图片]"
                                                 else:
+                                                    # 遇到图片URL时，先将之前的文本添加到列表
+                                                    if full_text:
+                                                        current_message_content.append({"type": "text", "text": full_text})
+                                                        full_text = ""  # 重置当前文本
                                                     # 保留图片原始位置，使用OpenAI格式
                                                     current_message_content.append({"type": "image_url", "image_url": {"url": img_url}})
+                                            else:
+                                                # 关闭视觉开关时，使用[图片]占位符，不换行
+                                                full_text += " [图片]"
                             
                             # 添加换行
                             full_text += "\n"
@@ -382,25 +384,28 @@ class GroupContextPlugin(Star):
                 # @ 也作为文本处理
                 full_text += f" [At: {comp.name if hasattr(comp, 'name') else comp.qq}]"
             elif isinstance(comp, Image):
-                # 遇到图片时，先将之前的文本添加到列表（如果有）
-                if full_text:
-                    current_message_content.append({"type": "text", "text": full_text})
-                    full_text = ""  # 重置当前文本
-                
-                if self.enable_image_recognition:
-                    url = self._extract_image_url(comp)
-                    if url:
-                        if self.image_caption and self.image_caption_provider_id:
+                url = self._extract_image_url(comp)
+                if url:
+                    if self.enable_image_recognition:
+                        if self.image_caption:
                             try:
                                 caption = await self.get_image_caption(url, self.image_caption_provider_id)
-                                # 图片描述作为文本处理
+                                # 图片描述作为文本处理，保持在同一行
                                 full_text += f" [图片描述: {caption}]"
                             except Exception as e:
                                 logger.error(f"获取图片描述失败: {e}")
+                                # 图片描述获取失败时，使用[图片]占位符，保持在同一行
                                 full_text += " [图片]"
                         else:
+                            # 遇到图片URL时，先将之前的文本添加到列表
+                            if full_text:
+                                current_message_content.append({"type": "text", "text": full_text})
+                                full_text = ""  # 重置当前文本
                             # 保留图片原始位置，使用OpenAI格式
                             current_message_content.append({"type": "image_url", "image_url": {"url": url}})
+                    else:
+                        # 关闭视觉开关时，使用[图片]占位符，保持在同一行
+                        full_text += " [图片]"
             elif isinstance(comp, Forward):
                 # 合并转发消息已在前面处理
                 pass
