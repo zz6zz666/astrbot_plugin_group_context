@@ -46,6 +46,9 @@ class GroupContextPlugin(Star):
         self.image_caption_provider_id = self.get_cfg("image_caption_provider_id", "")
         self.image_carry_rounds = int(self.get_cfg("image_carry_rounds", 1))
 
+        self.active_reply_prompt = self.get_cfg("active_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it. Only output your response and do not output any other information.")
+        self.normal_reply_prompt = self.get_cfg("normal_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it.")
+
         logger.info("群聊上下文感知插件已初始化")
         logger.info(f"合并转发分析: {'已启用' if self.enable_forward_analysis else '已禁用'}")
         logger.info(f"图片识别: {'已启用' if self.enable_image_recognition else '已禁用'}")
@@ -499,9 +502,10 @@ class GroupContextPlugin(Star):
         rounds_limit = int(self.get_cfg("conversation_rounds_limit", 10))
 
         # 首先，清洗掉先前已经嵌入的system字段
-        if req.contexts:
-            # 过滤掉所有system角色的消息
-            req.contexts = [ctx for ctx in req.contexts if ctx.get("role") != "system"]
+        req.contexts = [
+            ctx for ctx in req.contexts 
+            if not (ctx.get("role") == "system" and (ctx.get("content", "").startswith(self.active_reply_prompt[:30]) or ctx.get("content", "").startswith(self.normal_reply_prompt[:30])))
+        ]
 
         # 统计当前contexts中的user/assistant消息对数量
         pair_count = sum(1 for ctx in req.contexts if ctx.get("role") == "assistant")
@@ -580,11 +584,11 @@ class GroupContextPlugin(Star):
         # 获取配置的提示词
         is_active_reply = event.unified_msg_origin in self.active_reply_sessions
         if is_active_reply:
-            system_message = self.get_cfg("active_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it. Only output your response and do not output any other information.")
+            system_message = self.active_reply_prompt
             # 清除主动回复标记
             self.active_reply_sessions.discard(event.unified_msg_origin)
         else:
-            system_message = self.get_cfg("normal_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming.")
+            system_message = self.normal_reply_prompt
 
         # 将 system 消息添加到上下文
         req.contexts.append({"role": "system", "content": system_message})
