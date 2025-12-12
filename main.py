@@ -93,11 +93,6 @@ class GroupContextPlugin(Star):
                 logger.error(traceback.format_exc())
                 logger.error(f"主动回复失败: {e}")
 
-    def _limit_chat_history(self, unified_msg_origin: str):
-        """限制聊天记录数量"""
-        max_cnt = int(self.get_cfg("group_message_max_cnt", 300))
-        if len(self.session_chats[unified_msg_origin]) > max_cnt:
-            self.session_chats[unified_msg_origin].pop(0)
 
     async def handle_message(self, event: AstrMessageEvent):
         """记录群聊消息到上下文中"""
@@ -133,7 +128,6 @@ class GroupContextPlugin(Star):
         final_message = "".join(parts)
         logger.debug(f"群聊上下文 | {event.unified_msg_origin} | {final_message}")
         self.session_chats[event.unified_msg_origin].append(final_message)
-        self._limit_chat_history(event.unified_msg_origin)
 
     async def get_image_caption(self, image_url: str, image_caption_provider_id: str) -> str:
         """获取图片描述"""
@@ -193,111 +187,54 @@ class GroupContextPlugin(Star):
             return
 
         enable_active_reply = bool(self.get_cfg("enable_active_reply", False))
-        ar_prompt = self.get_cfg("ar_prompt", "")
         prompt = req.prompt
+        rounds_limit = int(self.get_cfg("conversation_rounds_limit", 10))
 
         # 首先，清洗掉先前已经嵌入的system字段
         if req.contexts:
             # 过滤掉所有system角色的消息
             req.contexts = [ctx for ctx in req.contexts if ctx.get("role") != "system"]
 
-        if ar_prompt:
-            # 如果有自定义提示词，保持原有的单一 prompt 方式
-            chats_str = "\n---\n".join(self.session_chats[event.unified_msg_origin])
-            req.prompt = ar_prompt.replace("{chat_history}", chats_str).replace("{message}", prompt)
+        # 统计当前contexts中的user/assistant消息对数量
+        pair_count = sum(1 for ctx in req.contexts if ctx.get("role") == "assistant")
+
+        # 如果超过轮数限制，找到最后一个需要删除的assistant消息位置
+        if pair_count > rounds_limit:
+            # 需要删除的assistant消息数量
+            remove_count = pair_count - rounds_limit
+            assistant_count = 0
+            cut_index = 0
+
+            # 从前往后找到第 remove_count 个 assistant 消息的位置
+            for i, ctx in enumerate(req.contexts):
+                if ctx.get("role") == "assistant":
+                    assistant_count += 1
+                    if assistant_count == remove_count:
+                        cut_index = i + 1  # 在这个assistant之后切割
+                        break
+
+            # 删除cut_index之前的所有消息
+            req.contexts = req.contexts[cut_index:]
+        
+
+        # 获取配置的提示词
+        if enable_active_reply:
+            system_message = self.get_cfg("active_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it. Only output your response and do not output any other information.")
         else:
-            # 使用标准的 user/assistant 对话格式
-            # 注意：这里不再清空req.contexts，而是在原有基础上处理
+            system_message = self.get_cfg("normal_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming.")
 
-            # 将聊天记录转换为 user/assistant 对
-            chat_history = self.session_chats[event.unified_msg_origin]
-            user_messages = []
-            assistant_messages = []
+        # 将 system 消息添加到上下文
+        req.contexts.append({"role": "system", "content": system_message})
 
-            for chat in chat_history:
-                if chat.startswith("[You]"):
-                    # AI 的回复
-                    # 格式: [You]: 消息内容
-                    content = chat.split("]: ", 1)[1] if "]: " in chat else chat
-                    assistant_messages.append(content)
-                else:
-                    # 用户消息
-                    if assistant_messages and user_messages:
-                        # 如果有累积的 user 和 assistant 消息，先添加到 contexts
-                        user_content = "\n---\n".join(user_messages)
-                        req.contexts.append({"role": "user", "content": user_content})
+        # 构建会话历史
+        chats_str = "\n---\n".join(self.session_chats[event.unified_msg_origin])
 
-                        assistant_content = "\n---\n".join(assistant_messages)
-                        req.contexts.append({"role": "assistant", "content": assistant_content})
+        # 会话历史作为新的 prompt
+        req.prompt = chats_str
+        
+        # 清空该会话的历史记录，只保留上一次请求过后的群聊消息
+        self.session_chats[event.unified_msg_origin].clear()
 
-                        user_messages = []
-                        assistant_messages = []
-                    elif user_messages:
-                        # 如果只有 user 消息没有 assistant 回复，添加到 contexts
-                        user_content = "\n---\n".join(user_messages)
-                        req.contexts.append({"role": "user", "content": user_content})
-                        user_messages = []
-
-                    user_messages.append(chat)
-
-            # 处理剩余的消息
-            if user_messages:
-                user_content = "\n---\n".join(user_messages)
-                req.contexts.append({"role": "user", "content": user_content})
-            if assistant_messages:
-                assistant_content = "\n---\n".join(assistant_messages)
-                req.contexts.append({"role": "assistant", "content": assistant_content})
-
-            # 构建 system 消息
-            system_message = "You are now in a chatroom. The chat history is as above."
-            if enable_active_reply:
-                system_message += "\nNow, a new message is coming. Please react to it. Only output your response and do not output any other information."
-            else:
-                system_message += "\nNow, a new message is coming."
-
-            # 将 system 消息插入到当前一次请求prompt的user字段前面
-            # 也就是插入到contexts的最后面，因为下一个将是新的user prompt
-            req.contexts.append({"role": "system", "content": system_message})
-
-            # 当前用户消息作为新的 prompt
-            req.prompt = prompt
-
-    @filter.on_llm_response()
-    async def after_req_llm(self, event: AstrMessageEvent, llm_resp: LLMResponse):
-        """LLM 响应后,记录 AI 的回复"""
-        if event.unified_msg_origin not in self.session_chats:
-            return
-
-        if llm_resp.completion_text:
-            final_message = f"[You]: {llm_resp.completion_text}"
-            logger.debug(
-                f"记录 AI 响应: {event.unified_msg_origin} | {final_message}"
-            )
-            self.session_chats[event.unified_msg_origin].append(final_message)
-
-            # 限制记录数量
-            max_cnt = int(self.get_cfg("group_message_max_cnt", 300))
-            if len(self.session_chats[event.unified_msg_origin]) > max_cnt:
-                self.session_chats[event.unified_msg_origin].pop(0)
-
-    @filter.after_message_sent()
-    async def after_message_sent(self, event: AstrMessageEvent):
-        """消息发送后处理,支持清除会话"""
-        try:
-            clean_session = event.get_extra("_clean_ltm_session", False)
-            if clean_session:
-                await self.remove_session(event)
-        except Exception as e:
-            logger.error(f"清理会话失败: {e}")
-
-    async def remove_session(self, event: AstrMessageEvent) -> int:
-        """移除指定会话的聊天记录"""
-        cnt = 0
-        if event.unified_msg_origin in self.session_chats:
-            cnt = len(self.session_chats[event.unified_msg_origin])
-            del self.session_chats[event.unified_msg_origin]
-            logger.info(f"已清除 {event.unified_msg_origin} 的 {cnt} 条聊天记录")
-        return cnt
 
     async def terminate(self):
         """插件卸载时的清理工作"""

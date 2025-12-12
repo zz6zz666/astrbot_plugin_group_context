@@ -1,21 +1,17 @@
 {
-  "group_message_max_cnt": {
-    "type": "int",
-    "description": "群聊消息最大记录条数",
-    "default": 300
-  },
+
   "image_caption": {
     "type": "bool",
     "description": "是否启用图片描述功能",
     "default": false
   },
   "image_caption_prompt": {
-    "type": "str",
+    "type": "string",
     "description": "图片描述提示词",
     "default": "请描述这张图片的内容"
   },
   "image_caption_provider_id": {
-    "type": "str",
+    "type": "string",
     "description": "用于图片描述的 Provider ID (留空则使用当前正在使用的 Provider)",
     "default": ""
   },
@@ -25,7 +21,7 @@
     "default": false
   },
   "ar_method": {
-    "type": "str",
+    "type": "string",
     "description": "主动回复触发方式 (possibility_reply: 概率回复)",
     "default": "possibility_reply"
   },
@@ -34,10 +30,20 @@
     "description": "主动回复概率 (0.0-1.0)",
     "default": 0.1
   },
-  "ar_prompt": {
-    "type": "str",
-    "description": "主动回复自定义提示词 (可使用 {chat_history} 和 {message} 变量)",
-    "default": ""
+  "active_reply_prompt": {
+    "type": "string",
+    "description": "主动回复提示词文本",
+    "default": "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it. Only output your response and do not output any other information."
+  },
+  "normal_reply_prompt": {
+    "type": "string",
+    "description": "非主动回复提示词文本",
+    "default": "You are now in a chatroom. The chat history is as above. Now, new messages are coming."
+  },
+  "conversation_rounds_limit": {
+    "type": "int",
+    "description": "保留的user/assistant对话轮数",
+    "default": 10
   },
   "ar_whitelist": {
     "type": "list",

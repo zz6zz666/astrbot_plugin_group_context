@@ -23,32 +23,15 @@
 - `enable_active_reply`: 是否启用主动回复功能 (默认: false)
 - `ar_method`: 主动回复触发方式 (默认: "possibility_reply")
 - `ar_possibility`: 主动回复概率,范围 0.0-1.0 (默认: 0.1)
-- `ar_prompt`: 主动回复自定义提示词 (可选)
+- `active_reply_prompt`: 主动回复自定义提示词 (可选)
+- `normal_reply_prompt`: 一般回复自定义提示词 (可选)
 - `ar_whitelist`: 主动回复白名单,群号或用户ID列表 (留空表示不限制)
-
-### 自定义提示词变量
-
-在 `ar_prompt` 中可以使用以下变量:
-- `{chat_history}`: 群聊历史记录
-- `{message}`: 当前接收到的消息
-
-示例:
-```
-你是一个活跃的群聊成员。以下是聊天记录:
-{chat_history}
-
-现在收到新消息: {message}
-
-请自然地回复这条消息,使用与群聊相同的语言。
-```
 
 ## 与内置插件的区别
 
 本插件基于 AstrBot 内置的 long_term_memory 功能,主要改进包括:
-
-1. **配置方式**: 采用用户插件的配置文件格式 (_conf_schema.json)
-2. **独立性**: 可以独立安装、卸载和更新
-3. **可定制性**: 更容易根据需求进行修改和优化
+![alt text](image.png)
+1. **user/agent对** 形式的上下文，每次请求的 prompt 中仅包含上一轮请求过后新增的群聊消息，带来更好的群聊体验
 
 ## 注意事项
 
