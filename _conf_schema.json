@@ -24,11 +24,6 @@
     "description": "是否启用QQ合并转发消息分析（仅aiocqhttp平台，支持直接发送或回复引用）",
     "default": true
   },
-  "command_prefixes": {
-    "type": "list",
-    "description": "指令前缀列表（以这些前缀开头的消息将被自动过滤，不记录到上下文）",
-    "default": ["/"]
-  },
   "enable_active_reply": {
     "type": "bool",
     "description": "是否启用主动回复功能",

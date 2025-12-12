@@ -39,9 +39,6 @@ class GroupContextPlugin(Star):
         self.enable_forward_analysis = bool(self.get_cfg("enable_forward_analysis", True))
         self.forward_prefix = "【合并转发内容】"
 
-        # 指令过滤相关配置
-        self.command_prefixes = self.get_cfg("command_prefixes", ["/"])
-
         # 图片处理相关配置
         self.enable_image_recognition = bool(self.get_cfg("enable_image_recognition", True))
         self.image_caption = bool(self.get_cfg("image_caption", False))
@@ -49,7 +46,6 @@ class GroupContextPlugin(Star):
 
         logger.info("群聊上下文感知插件已初始化")
         logger.info(f"合并转发分析: {'已启用' if self.enable_forward_analysis else '已禁用'}")
-        logger.info(f"指令前缀: {self.command_prefixes}")
         logger.info(f"图片识别: {'已启用' if self.enable_image_recognition else '已禁用'}")
         if self.enable_image_recognition:
             logger.info(f"图片处理模式: {'转述描述' if self.image_caption else 'URL注入'}")
