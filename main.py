@@ -23,6 +23,8 @@ class GroupContextPlugin(Star):
         self.config = config  # AstrBotConfig继承自Dict,可以直接使用字典方法访问
         self.session_chats = defaultdict(list)
         """记录群成员的群聊记录"""
+        self.active_reply_sessions = set()
+        """记录当前是主动回复的会话"""
         logger.info("群聊上下文感知插件已初始化")
 
     def get_cfg(self, key: str, default=None):
@@ -57,6 +59,8 @@ class GroupContextPlugin(Star):
 
         # 主动回复逻辑
         if need_active:
+            # 标记当前会话为主动回复
+            self.active_reply_sessions.add(event.unified_msg_origin)
             provider = self.context.get_using_provider(event.unified_msg_origin)
             if not provider:
                 logger.error("未找到任何 LLM 提供商。请先配置。无法主动回复")
@@ -186,8 +190,6 @@ class GroupContextPlugin(Star):
         if event.unified_msg_origin not in self.session_chats:
             return
 
-        enable_active_reply = bool(self.get_cfg("enable_active_reply", False))
-        prompt = req.prompt
         rounds_limit = int(self.get_cfg("conversation_rounds_limit", 10))
 
         # 首先，清洗掉先前已经嵌入的system字段
@@ -218,8 +220,11 @@ class GroupContextPlugin(Star):
         
 
         # 获取配置的提示词
-        if enable_active_reply:
+        is_active_reply = event.unified_msg_origin in self.active_reply_sessions
+        if is_active_reply:
             system_message = self.get_cfg("active_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it. Only output your response and do not output any other information.")
+            # 清除主动回复标记
+            self.active_reply_sessions.discard(event.unified_msg_origin)
         else:
             system_message = self.get_cfg("normal_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming.")
 
