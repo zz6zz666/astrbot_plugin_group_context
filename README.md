@@ -25,16 +25,19 @@
 
 1. **user/agent对** 形式的上下文，每次请求的 prompt 中仅包含上一轮请求过后新增的群聊消息，带来更好的群聊体验
 
-![alt text](image-3.png)
+<img width="1229" height="820" alt="image-3" src="https://github.com/user-attachments/assets/1e6e41f1-1585-44d2-b904-119503f4fa09" />
+
 
 2. **自定义的回复提示词**，主动回复和非主动回复都能自定义提示词，并将提示词改为system字段注入在当前请求 prompt 上方。且仅当前一轮回复是主动回复时，才采用主动回复的提示词，修复了原始插件主动回复提示词耦合的问题。
 > 这是主动回复时的提示词 
 
-![alt text](主动回复.png)
+<img width="1250" height="508" alt="主动回复" src="https://github.com/user-attachments/assets/63c4eb31-c321-4407-8ddd-ffe0bfd9cd46" />
+
 
 > 这是被动回复时的提示词 
 
-![alt text](被动回复.png) 
+<img width="1249" height="848" alt="被动回复" src="https://github.com/user-attachments/assets/cb6eb477-0e79-4e14-8fbc-7ed96cac481f" />
+
 
 > 同时可以看到，提示词在上下文中仅唯一出现在当前轮 user 字段前的 system 字段中，上一轮注入的提示词会被从上下文正确清洗。  
 
@@ -94,11 +97,13 @@
 ```
 4. **图片识别**，除了支持AstrBot原始上下文感知中的模型图像转述方式，还支持对群聊中的原生url图片进行自动嵌入；包括合并转发中的图片也支持根据配置项使用这两种嵌入方式。当未开启时，所有图片以 `[图片]` 占位符替代。
 
-![alt text](image-1.png)
+<img width="1246" height="890" alt="image-1" src="https://github.com/user-attachments/assets/a022f52f-ac2c-484b-8600-358331744a28" />
+
 
 5. **多媒体content和纯文本prompt** 同时具备。除了上述 `JSON` 中展示的一样，插件重新构造了一个 `content` 字段为列表格式的 user 字段，我们还提供了利用 prompt 字段中的纯文本提示词支持。这样做保证了如果当其他插件用到 on_llm_requset 钩子以及 prompt 进行修饰时，prompt 中可以提供 text 格式的请求内容，本质上是为了`兼容其他插件`。其中 prompt 中的图片 url 将会被替换为 `[图片]` 占位符。插件另配备了一个优先级极低的钩子，用于将 prompt 置为空，保证了实际 llm 请求的时候不会出现重复的请求内容。
 
-![alt text](image-2.png)
+<img width="1259" height="363" alt="image-2" src="https://github.com/user-attachments/assets/ca52cd60-b219-42fc-b16a-19cc3812c46c" />
+
 > 上面是控制台看到的额外构建的 prompt 字段，采用\n---\n作为群聊消息的分隔符，并且图片 url 也被替换为 [图片] 占位符。但是经过后一个钩子，最终请求的时候这个额外的 prompt 字段会被置空。
 
 ## 注意事项
