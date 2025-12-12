@@ -58,16 +58,6 @@ class GroupContextPlugin(Star):
         """从插件配置中获取配置项"""
         return self.config.get(key, default)
 
-    def is_command(self, message: str) -> bool:
-        """判断消息是否是指令"""
-        message = message.strip()
-        if not message:
-            return False
-        for prefix in self.command_prefixes:
-            if message.startswith(prefix):
-                return True
-        return False
-
     def _extract_image_url(self, image_data) -> Optional[str]:
         """从不同格式的图片数据中提取URL
 
@@ -216,21 +206,6 @@ class GroupContextPlugin(Star):
         if not has_valid_content:
             return
 
-        # 检查是否为合并转发消息
-        has_forward = False
-        if IS_AIOCQHTTP and isinstance(event, AiocqhttpMessageEvent):
-            for seg in event.message_obj.message:
-                if isinstance(seg, Forward):
-                    has_forward = True
-                    break
-
-        # 过滤指令消息（但保留合并转发消息）
-        if not has_forward:
-            message_text = event.message_str.strip()
-            if self.is_command(message_text):
-                logger.debug(f"[on_message] 跳过指令消息: {message_text}")
-                return  # 指令消息不记录到上下文，也不触发主动回复
-
         # 检查是否需要主动回复
         need_active = await self.need_active_reply(event)
 
@@ -301,8 +276,6 @@ class GroupContextPlugin(Star):
         full_text = f"[{event.message_obj.sender.nickname}/{datetime_str}]: "
         
         # 1. 检测并处理合并转发消息
-        forward_has_content = False
-
         if self.enable_forward_analysis and IS_AIOCQHTTP:
 
             forward_id = await self._detect_forward_message(event)
@@ -521,12 +494,30 @@ class GroupContextPlugin(Star):
 
         # 构建会话历史 - 转换为OpenAI兼容的多模态格式
         combined_content = []
+        # 同时构建纯文本prompt，图片用[图片]占位
+        text_prompt_parts = []
+        
         for message in self.session_chats[event.unified_msg_origin]:
             combined_content.extend(message)
+            
+            # 构建纯文本prompt部分
+            text_part = ""
+            for comp in message:
+                if comp["type"] == "text":
+                    text_part += comp["text"]
+                elif comp["type"] == "image_url":
+                    text_part += " [图片]"
+            
+            if text_part.strip():
+                text_prompt_parts.append(text_part.strip())
         
-        # 将会话历史添加到prompt中
-        req.prompt = ""  # 清空原始prompt，因为我们将使用多模态content
+        # 构建纯文本prompt，用---分割（允许其他插件的llm+request钩子获取prompt内容）
+        req.prompt = ""
+        if text_prompt_parts:
+            req.prompt = "\n---\n".join(text_prompt_parts)
         
+        logger.debug(f"构建的prompt: \n{req.prompt}")
+
         # 创建用户角色的多模态消息
         user_message = {
             "role": "user",
@@ -538,7 +529,21 @@ class GroupContextPlugin(Star):
         
         # 清空该会话的历史记录，只保留上一次请求过后的群聊消息
         self.session_chats[event.unified_msg_origin].clear()
-
+    
+    @filter.on_llm_request(priority=-10000)
+    async def on_req_llm_clear_prompt(self, event: AstrMessageEvent, req: ProviderRequest):
+        """在所有插件处理完后，将prompt清空，并清除上下文中空的user字段"""
+        # 清空prompt，避免重复内容
+        req.prompt = ""
+        
+        # 清除上下文中空的user字段
+        if req.contexts:
+            req.contexts = [
+                ctx for ctx in req.contexts 
+                if not (ctx.get("role") == "user" and 
+                       (ctx.get("content") == "" or 
+                        (isinstance(ctx.get("content"), list) and not ctx.get("content"))))
+            ]
 
     async def terminate(self):
         """插件卸载时的清理工作"""
