@@ -3,20 +3,29 @@ import random
 import traceback
 import uuid
 from collections import defaultdict
+from typing import Optional, List, Tuple
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest, LLMResponse, Provider
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.message_components import At, Image, Plain
+from astrbot.api.message_components import At, Image, Plain, Forward, Reply
 from astrbot.api.platform import MessageType
+import astrbot.api.message_components as Comp
+
+try:
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+    IS_AIOCQHTTP = True
+except ImportError:
+    IS_AIOCQHTTP = False
+
 
 """
 群聊上下文感知插件
 优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述等功能
 """
 
-@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述等功能", "1.0.0")
+@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.0.0")
 class GroupContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -25,11 +34,130 @@ class GroupContextPlugin(Star):
         """记录群成员的群聊记录"""
         self.active_reply_sessions = set()
         """记录当前是主动回复的会话"""
+
+        # 合并转发相关配置
+        self.enable_forward_analysis = bool(self.get_cfg("enable_forward_analysis", True))
+        self.forward_prefix = "【合并转发内容】"
+
+        # 指令过滤相关配置
+        self.command_prefixes = self.get_cfg("command_prefixes", ["/"])
+
+        # 图片处理相关配置
+        self.enable_image_recognition = bool(self.get_cfg("enable_image_recognition", True))
+        self.image_caption = bool(self.get_cfg("image_caption", False))
+        self.image_caption_provider_id = self.get_cfg("image_caption_provider_id", "")
+
         logger.info("群聊上下文感知插件已初始化")
+        logger.info(f"合并转发分析: {'已启用' if self.enable_forward_analysis else '已禁用'}")
+        logger.info(f"指令前缀: {self.command_prefixes}")
+        logger.info(f"图片识别: {'已启用' if self.enable_image_recognition else '已禁用'}")
+        if self.enable_image_recognition:
+            logger.info(f"图片处理模式: {'转述描述' if self.image_caption else 'URL注入'}")
 
     def get_cfg(self, key: str, default=None):
         """从插件配置中获取配置项"""
         return self.config.get(key, default)
+
+    def is_command(self, message: str) -> bool:
+        """判断消息是否是指令"""
+        message = message.strip()
+        if not message:
+            return False
+        for prefix in self.command_prefixes:
+            if message.startswith(prefix):
+                return True
+        return False
+
+    async def _detect_forward_message(self, event) -> Optional[str]:
+        """检测合并转发消息并返回forward_id"""
+        logger.debug(f"_detect_forward_message | IS_AIOCQHTTP={IS_AIOCQHTTP}, isinstance(event, AiocqhttpMessageEvent)={isinstance(event, AiocqhttpMessageEvent) if IS_AIOCQHTTP else 'N/A'}")
+
+        if not IS_AIOCQHTTP or not isinstance(event, AiocqhttpMessageEvent):
+            logger.debug("不符合合并转发检测条件，返回None")
+            return None
+
+        # 场景1: 直接发送的合并转发
+        for seg in event.message_obj.message:
+            if isinstance(seg, Comp.Forward):
+                return seg.id
+        
+        # 场景2: 回复的合并转发
+        reply_seg = None
+        for seg in event.message_obj.message:
+            if isinstance(seg, Comp.Reply):
+                reply_seg = seg
+                break
+
+        if reply_seg:
+            try:
+                client = event.bot
+                original_msg = await client.api.call_action('get_msg', message_id=reply_seg.id)
+                
+                if original_msg and 'message' in original_msg:
+                    original_message_chain = original_msg['message']
+                    if isinstance(original_message_chain, list):
+                        for segment in original_message_chain:
+                            if isinstance(segment, dict) and segment.get("type") == "forward":
+                                return segment.get("data", {}).get("id")
+            except Exception as e:
+                logger.error(f"获取回复消息失败: {e}")
+
+        return None
+
+    async def _extract_forward_content(self, event, forward_id: str) -> Tuple[str, List[str]]:
+        """提取合并转发消息的文本内容和图片URL
+
+        返回: (文本内容, 图片URL列表)
+        - 如果 enable_image_recognition = False，返回的图片URL列表为空
+        - 如果 enable_image_recognition = True，返回所有图片URL
+        """
+        if not IS_AIOCQHTTP or not isinstance(event, AiocqhttpMessageEvent):
+            return "", []
+
+        try:
+            # 调用API获取合并转发消息内容
+            client = event.bot
+            forward_data = await client.api.call_action('get_forward_msg', id=forward_id)
+            messages = forward_data.get("messages", [])
+
+            extracted_texts = []
+            image_urls = []
+
+            for message_node in messages:
+                sender_name = message_node.get("sender", {}).get("nickname", "未知用户")
+                raw_content = message_node.get("message") or message_node.get("content", [])
+
+                # 解析消息内容
+                node_text_parts = []
+                for seg in raw_content:
+                    if isinstance(seg, dict):
+                        seg_type = seg.get("type")
+                        seg_data = seg.get("data", {})
+
+                        if seg_type == "text":
+                            node_text_parts.append(seg_data.get("text", ""))
+                        elif seg_type == "image":
+                            if self.enable_image_recognition:
+                                # 提取图片URL
+                                img_url = seg_data.get("url") or seg_data.get("file")
+                                if img_url:
+                                    image_urls.append(img_url)
+                                    node_text_parts.append("[图片]")
+                            # 如果未启用图片识别，直接忽略图片
+                        elif seg_type == "at":
+                            node_text_parts.append(f"[At: {seg_data.get('qq', '')}]")
+
+                full_node_text = "".join(node_text_parts).strip()
+                if full_node_text:
+                    extracted_texts.append(f"{sender_name}: {full_node_text}")
+
+            final_text = "\n".join(extracted_texts)
+            return final_text, image_urls
+
+        except Exception as e:
+            logger.error(f"提取合并转发内容失败: {e}")
+            logger.error(traceback.format_exc())
+            return "", []
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -38,15 +166,34 @@ class GroupContextPlugin(Star):
         if event.get_message_type() != MessageType.GROUP_MESSAGE:
             return
 
-        # 检查是否有文本或图片内容
-        has_image_or_plain = False
+        # 检查是否有文本、图片或合并转发内容
+        has_valid_content = False
         for comp in event.message_obj.message:
             if isinstance(comp, Plain) or isinstance(comp, Image):
-                has_image_or_plain = True
+                has_valid_content = True
+                break
+            # 合并转发消息需要立即处理，否则可能失效
+            if IS_AIOCQHTTP and isinstance(comp, Forward):
+                has_valid_content = True
                 break
 
-        if not has_image_or_plain:
+        if not has_valid_content:
             return
+
+        # 检查是否为合并转发消息
+        has_forward = False
+        if IS_AIOCQHTTP and isinstance(event, AiocqhttpMessageEvent):
+            for seg in event.message_obj.message:
+                if isinstance(seg, Forward):
+                    has_forward = True
+                    break
+
+        # 过滤指令消息（但保留合并转发消息）
+        if not has_forward:
+            message_text = event.message_str.strip()
+            if self.is_command(message_text):
+                logger.debug(f"[on_message] 跳过指令消息: {message_text}")
+                return  # 指令消息不记录到上下文，也不触发主动回复
 
         # 检查是否需要主动回复
         need_active = await self.need_active_reply(event)
@@ -99,35 +246,77 @@ class GroupContextPlugin(Star):
 
 
     async def handle_message(self, event: AstrMessageEvent):
-        """记录群聊消息到上下文中"""
+        """记录群聊消息到上下文中
+
+        图片处理逻辑：
+        1. enable_image_recognition = False: 完全忽略所有图片
+        2. enable_image_recognition = True, image_caption = False: 所有图片以URL形式注入
+        3. enable_image_recognition = True, image_caption = True: 所有图片使用转述描述
+
+        注意：指令消息过滤已在 on_message 中完成，这里不需要再次检查
+        """
+
+        # 1. 检测并处理合并转发消息
+        forward_text = ""
+        forward_images = []
+
+        if self.enable_forward_analysis and IS_AIOCQHTTP:
+
+            forward_id = await self._detect_forward_message(event)
+
+            if forward_id:
+                forward_text, forward_images = await self._extract_forward_content(event, forward_id)
+                logger.info(f"检测到合并转发消息，提取了 {len(forward_text)} 字符和 {len(forward_images)} 张图片")
+            else:
+                logger.debug("未检测到合并转发消息")
+        else:
+            logger.debug(f"合并转发分析未启用或不支持当前平台")
+
         datetime_str = datetime.datetime.now().strftime("%H:%M:%S")
         parts = [f"[{event.message_obj.sender.nickname}/{datetime_str}]: "]
 
-        # 获取配置
-        image_caption = bool(self.get_cfg("image_caption", False))
-        image_caption_provider_id = self.get_cfg("image_caption_provider_id", "")
+        # 2. 处理合并转发内容
+        if forward_text:
+            parts.append(f"\n{self.forward_prefix}\n\t<begin>\n{forward_text}\n\t<end>\n")
 
+        # 3. 收集常规消息中的图片URL
+        regular_images = []
         for comp in event.get_messages():
             if isinstance(comp, Plain):
                 parts.append(f" {comp.text}")
             elif isinstance(comp, Image):
-                if image_caption and image_caption_provider_id:
-                    try:
-                        url = comp.url if comp.url else comp.file
-                        if not url:
-                            raise Exception("图片 URL 为空")
-                        caption = await self.get_image_caption(
-                            url,
-                            image_caption_provider_id
-                        )
-                        parts.append(f" [Image: {caption}]")
-                    except Exception as e:
-                        logger.error(f"获取图片描述失败: {e}")
-                        parts.append(" [Image]")
-                else:
-                    parts.append(" [Image]")
+                if self.enable_image_recognition:
+                    url = comp.url if comp.url else comp.file
+                    if url:
+                        regular_images.append(url)
+                # 如果未启用图片识别，完全忽略图片
             elif isinstance(comp, At):
                 parts.append(f" [At: {comp.name}]")
+
+        # 5. 处理所有图片（常规 + 合并转发）
+        all_images = regular_images + forward_images
+
+        if all_images and self.enable_image_recognition:
+            if self.image_caption and self.image_caption_provider_id:
+                # 模式3: 图片转述描述
+                for idx, img_url in enumerate(all_images):
+                    try:
+                        caption = await self.get_image_caption(img_url, self.image_caption_provider_id)
+                        # 区分常规图片和合并转发图片
+                        if idx < len(regular_images):
+                            parts.append(f" [图片描述: {caption}]")
+                        else:
+                            parts.append(f" [合并转发图片描述: {caption}]")
+                    except Exception as e:
+                        logger.error(f"获取图片描述失败: {e}")
+                        parts.append(" [图片]")
+            else:
+                # 模式2: URL注入
+                for idx, img_url in enumerate(all_images):
+                    if idx < len(regular_images):
+                        parts.append(f" [图片URL: {img_url}]")
+                    else:
+                        parts.append(f" [合并转发图片URL: {img_url}]")
 
         final_message = "".join(parts)
         logger.debug(f"群聊上下文 | {event.unified_msg_origin} | {final_message}")

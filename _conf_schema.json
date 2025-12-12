@@ -1,8 +1,12 @@
 {
-
+  "enable_image_recognition": {
+    "type": "bool",
+    "description": "是否启用群聊图片识别（关闭后完全忽略所有图片，包括合并转发中的图片）",
+    "default": false
+  },
   "image_caption": {
     "type": "bool",
-    "description": "是否启用图片描述功能",
+    "description": "是否启用图片描述功能（需先启用图片识别。开启后使用AI模型描述图片内容，关闭则以URL形式注入）\n描述图片的效果不如原生图片识别，建议仅在无法使用图片识别的聊天大模型时开启",
     "default": false
   },
   "image_caption_prompt": {
@@ -14,6 +18,16 @@
     "type": "string",
     "description": "用于图片描述的 Provider ID (留空则使用当前正在使用的 Provider)",
     "default": ""
+  },
+  "enable_forward_analysis": {
+    "type": "bool",
+    "description": "是否启用QQ合并转发消息分析（仅aiocqhttp平台，支持直接发送或回复引用）",
+    "default": true
+  },
+  "command_prefixes": {
+    "type": "list",
+    "description": "指令前缀列表（以这些前缀开头的消息将被自动过滤，不记录到上下文）",
+    "default": ["/"]
   },
   "enable_active_reply": {
     "type": "bool",
