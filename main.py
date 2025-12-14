@@ -26,7 +26,7 @@ except ImportError:
 优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述等功能
 """
 
-@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.0.0")
+@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.1.0")
 class GroupContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
