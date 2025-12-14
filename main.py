@@ -26,7 +26,7 @@ except ImportError:
 优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述等功能
 """
 
-@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.1.0")
+@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.2.0")
 class GroupContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -681,7 +681,7 @@ class GroupContextPlugin(Star):
         """私聊场景的LLM请求处理，实现对话轮数和图片携带轮数控制"""
         # 仅处理私聊消息且已启用私聊控制
         if not (self.enable_private_control and hasattr(event, 'get_message_type') and 
-                event.get_message_type() == MessageType.PRIVATE_MESSAGE):
+                event.get_message_type() == MessageType.FRIEND_MESSAGE):
             return
 
         # 使用私聊场景的配置
