@@ -7,11 +7,11 @@
   "image_carry_rounds": {
     "type": "int",
     "description": "控制携带图片的轮数，只保留最后N轮用户消息中的图片，将前面的图片转换为[图片]占位符，用于节省请求token",
-    "default": 1
+    "default": 2
   },
   "image_caption": {
     "type": "bool",
-    "description": "是否启用图片描述功能（需先启用图片识别。开启后使用AI模型描述图片内容，关闭则以URL形式注入）\n描述图片的效果不如原生图片识别，建议仅在无法使用图片识别的聊天大模型时开启",
+    "description": "是否启用图片描述功能（需先启用图片识别。适用于聊天大模型无法进行图片识别的场景）\n描述图片的效果不如原生图片识别，建议仅在无法使用图片识别的聊天大模型时开启",
     "default": false
   },
   "image_caption_prompt": {
@@ -34,11 +34,7 @@
     "description": "是否启用主动回复功能",
     "default": false
   },
-  "ar_method": {
-    "type": "string",
-    "description": "主动回复触发方式 (possibility_reply: 概率回复)",
-    "default": "possibility_reply"
-  },
+  
   "ar_possibility": {
     "type": "float",
     "description": "主动回复概率 (0.0-1.0)",
@@ -57,11 +53,36 @@
   "conversation_rounds_limit": {
     "type": "int",
     "description": "保留的user/assistant对话轮数",
-    "default": 10
+    "default": 6
   },
   "ar_whitelist": {
     "type": "list",
     "description": "主动回复白名单 (群号或用户ID列表,留空表示不限制)",
     "default": []
+  },
+  "enable_command_filter": {
+    "type": "bool",
+    "description": "是否启用群聊指令消息过滤（以指定前缀开头的消息将被忽略）",
+    "default": true
+  },
+  "command_prefixes": {
+    "type": "list",
+    "description": "指令消息前缀列表",
+    "default": ["/"]
+  },
+    "enable_private_control": {
+    "type": "bool",
+    "description": "是否启用私聊场景会话控制功能",
+    "default": false
+  },
+  "private_conversation_rounds_limit": {
+    "type": "int",
+    "description": "私聊场景保留的user/assistant对话轮数",
+    "default": 10
+  },
+  "private_image_carry_rounds": {
+    "type": "int",
+    "description": "私聊场景控制携带图片的轮数，只保留最后N轮用户消息中的图片",
+    "default": 2
   }
 }

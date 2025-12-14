@@ -49,16 +49,39 @@ class GroupContextPlugin(Star):
         self.active_reply_prompt = self.get_cfg("active_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it. Only output your response and do not output any other information.")
         self.normal_reply_prompt = self.get_cfg("normal_reply_prompt", "You are now in a chatroom. The chat history is as above. Now, new messages are coming. Please react to it.")
 
+        # 私聊场景控制配置
+        self.enable_private_control = bool(self.get_cfg("enable_private_control", False))
+        self.private_conversation_rounds_limit = int(self.get_cfg("private_conversation_rounds_limit", 10))
+        self.private_image_carry_rounds = int(self.get_cfg("private_image_carry_rounds", 5))
+
+        # 指令消息过滤配置
+        self.enable_command_filter = bool(self.get_cfg("enable_command_filter", True))
+        self.command_prefixes = self.get_cfg("command_prefixes", ["/"])
+
         logger.info("群聊上下文感知插件已初始化")
         logger.info(f"合并转发分析: {'已启用' if self.enable_forward_analysis else '已禁用'}")
         logger.info(f"图片识别: {'已启用' if self.enable_image_recognition else '已禁用'}")
         if self.enable_image_recognition:
             logger.info(f"图片处理模式: {'转述描述' if self.image_caption else 'URL注入'}")
             logger.info(f"图片携带轮数: {self.image_carry_rounds}")
+        logger.info(f"私聊控制: {'已启用' if self.enable_private_control else '已禁用'}")
+        if self.enable_private_control:
+            logger.info(f"私聊对话轮数: {self.private_conversation_rounds_limit}")
+            logger.info(f"私聊图片携带轮数: {self.private_image_carry_rounds}")
 
     def get_cfg(self, key: str, default=None):
         """从插件配置中获取配置项"""
         return self.config.get(key, default)
+
+    def is_command(self, message: str) -> bool:
+        """检测是否为指令消息"""
+        if not self.enable_command_filter or not message:
+            return False
+        message = message.strip()
+        for prefix in self.command_prefixes:
+            if message.startswith(prefix):
+                return True
+        return False
 
     def _extract_image_url(self, image_data) -> Optional[str]:
         """从不同格式的图片数据中提取URL
@@ -192,6 +215,17 @@ class GroupContextPlugin(Star):
         """处理群聊消息并支持主动回复"""
         # 仅支持群聊
         if event.get_message_type() != MessageType.GROUP_MESSAGE:
+            return
+
+        # 提取文本内容用于指令检测
+        message_text = ""
+        for comp in event.message_obj.message:
+            if isinstance(comp, Plain):
+                message_text += comp.text
+
+        # 过滤指令消息
+        if self.is_command(message_text):
+            logger.debug(f"群聊上下文 | {event.unified_msg_origin} | 检测到指令消息，已过滤")
             return
 
         # 检查是否有文本、图片或合并转发内容
@@ -485,28 +519,15 @@ class GroupContextPlugin(Star):
                 (event.get_group_id() and event.get_group_id() not in ar_whitelist)):
                 return False
 
-        # 检查触发方式
-        ar_method = self.get_cfg("ar_method", "possibility_reply")
-        if ar_method == "possibility_reply":
-            ar_possibility = float(self.get_cfg("ar_possibility", 0.1))
-            return random.random() < ar_possibility
+        # 使用概率触发主动回复
+        ar_possibility = float(self.get_cfg("ar_possibility", 0.1))
+        return random.random() < ar_possibility
 
-        return False
-
-    @filter.on_llm_request()
-    async def on_req_llm(self, event: AstrMessageEvent, req: ProviderRequest):
-        """当触发 LLM 请求前,调用此方法修改 req"""
-        if event.unified_msg_origin not in self.session_chats:
+    def _control_conversation_rounds(self, req: ProviderRequest, rounds_limit: int):
+        """控制对话轮数，保留最近N轮user/assistant消息对"""
+        if not req.contexts or rounds_limit <= 0:
             return
-
-        rounds_limit = int(self.get_cfg("conversation_rounds_limit", 10))
-
-        # 首先，清洗掉先前已经嵌入的system字段
-        req.contexts = [
-            ctx for ctx in req.contexts 
-            if not (ctx.get("role") == "system" and (ctx.get("content", "").startswith(self.active_reply_prompt[:30]) or ctx.get("content", "").startswith(self.normal_reply_prompt[:30])))
-        ]
-
+            
         # 统计当前contexts中的user/assistant消息对数量
         pair_count = sum(1 for ctx in req.contexts if ctx.get("role") == "assistant")
 
@@ -527,59 +548,83 @@ class GroupContextPlugin(Star):
 
             # 删除cut_index之前的所有消息
             req.contexts = req.contexts[cut_index:]
-        
-        # 过滤上下文消息，只保留最后N个user消息中的图片
-        if req.contexts and self.image_carry_rounds > 0:
-            # 找出所有user角色的消息索引
-            user_indices = [i for i, ctx in enumerate(req.contexts) if ctx.get("role") == "user"]
+    
+    def _control_image_carry_rounds(self, req: ProviderRequest, image_carry_rounds: int):
+        """控制图片携带轮数，只保留最后N个user消息中的图片"""
+        if not req.contexts or image_carry_rounds <= 0:
+            return
             
-            # 如果user消息数量超过image_carry_rounds，只保留最后N个
-            if len(user_indices) > self.image_carry_rounds:
-                # 需要保留图片的user消息索引
-                keep_indices = user_indices[-self.image_carry_rounds:]
-                
-                # 遍历所有user消息
-                for i in user_indices:
-                    # 如果不是需要保留的user消息，将图片替换为[图片]占位符
-                    if i not in keep_indices:
-                        ctx = req.contexts[i]
-                        if isinstance(ctx.get("content"), list):
-                            # 创建新的content列表
-                            new_content = []
-                            current_text = None
-                            
-                            for item in ctx["content"]:
-                                if item["type"] == "text":
-                                    text = item["text"]
-                                    
-                                    # 检查是否为新的时间戳（以[开头）
-                                    if text.startswith("["):
-                                        # 如果是新的时间戳，保存当前文本（如果有）
-                                        if current_text:
-                                            new_content.append({"type": "text", "text": current_text})
-                                        # 开始新的文本块
-                                        current_text = text
-                                    else:
-                                        # 如果不是新的时间戳，合并到当前文本
-                                        if current_text:
-                                            current_text += text
-                                        else:
-                                            # 如果没有当前文本，直接创建新的
-                                            current_text = text
-                                elif item["type"] == "image_url":
-                                    # 如果是图片，将[图片]追加到当前文本
+        # 找出所有user角色的消息索引
+        user_indices = [i for i, ctx in enumerate(req.contexts) if ctx.get("role") == "user"]
+        
+        # 如果user消息数量超过image_carry_rounds，只保留最后N个
+        if len(user_indices) > image_carry_rounds:
+            # 需要保留图片的user消息索引
+            keep_indices = user_indices[-image_carry_rounds:]
+            
+            # 遍历所有user消息
+            for i in user_indices:
+                # 如果不是需要保留的user消息，将图片替换为[图片]占位符
+                if i not in keep_indices:
+                    ctx = req.contexts[i]
+                    if isinstance(ctx.get("content"), list):
+                        # 创建新的content列表
+                        new_content = []
+                        current_text = None
+                        
+                        for item in ctx["content"]:
+                            if item["type"] == "text":
+                                text = item["text"]
+                                
+                                # 检查是否为新的时间戳（以[开头）
+                                if text.startswith("["):
+                                    # 如果是新的时间戳，保存当前文本（如果有）
                                     if current_text:
-                                        current_text += " [图片]"
+                                        new_content.append({"type": "text", "text": current_text})
+                                    # 开始新的文本块
+                                    current_text = text
+                                else:
+                                    # 如果不是新的时间戳，合并到当前文本
+                                    if current_text:
+                                        current_text += text
                                     else:
-                                        # 如果没有当前文本，创建一个新的
-                                        current_text = " [图片]"
-                            
-                            # 保存最后一个文本块
-                            if current_text:
-                                new_content.append({"type": "text", "text": current_text})
-                            
-                            # 更新为新的content列表
-                            ctx["content"] = new_content
+                                        # 如果没有当前文本，直接创建新的
+                                        current_text = text
+                            elif item["type"] == "image_url":
+                                # 如果是图片，将[图片]追加到当前文本
+                                if current_text:
+                                    current_text += " [图片]"
+                                else:
+                                    # 如果没有当前文本，创建一个新的
+                                    current_text = " [图片]"
+                        
+                        # 保存最后一个文本块
+                        if current_text:
+                            new_content.append({"type": "text", "text": current_text})
+                        
+                        # 更新为新的content列表
+                        ctx["content"] = new_content
+
+    @filter.on_llm_request()
+    async def on_req_llm(self, event: AstrMessageEvent, req: ProviderRequest):
+        """当触发 LLM 请求前,调用此方法修改 req（群聊场景）"""
+        if event.unified_msg_origin not in self.session_chats:
+            return
+
+        # 获取群聊的会话轮数限制
+        rounds_limit = int(self.get_cfg("conversation_rounds_limit", 10))
+        
+        # 首先，清洗掉先前已经嵌入的system字段
+        req.contexts = [
+            ctx for ctx in req.contexts 
+            if not (ctx.get("role") == "system" and (ctx.get("content", "").startswith(self.active_reply_prompt[:30]) or ctx.get("content", "").startswith(self.normal_reply_prompt[:30])))
+        ]
+
+        # 控制对话轮数
+        self._control_conversation_rounds(req, rounds_limit)
+        
+        # 控制图片携带轮数
+        self._control_image_carry_rounds(req, self.image_carry_rounds)
         
         # 获取配置的提示词
         is_active_reply = event.unified_msg_origin in self.active_reply_sessions
@@ -630,6 +675,24 @@ class GroupContextPlugin(Star):
         
         # 清空该会话的历史记录，只保留上一次请求过后的群聊消息
         self.session_chats[event.unified_msg_origin].clear()
+
+    @filter.on_llm_request()
+    async def on_req_llm_private(self, event: AstrMessageEvent, req: ProviderRequest):
+        """私聊场景的LLM请求处理，实现对话轮数和图片携带轮数控制"""
+        # 仅处理私聊消息且已启用私聊控制
+        if not (self.enable_private_control and hasattr(event, 'get_message_type') and 
+                event.get_message_type() == MessageType.PRIVATE_MESSAGE):
+            return
+
+        # 使用私聊场景的配置
+        rounds_limit = self.private_conversation_rounds_limit
+        image_carry_rounds = self.private_image_carry_rounds
+
+        # 控制对话轮数
+        self._control_conversation_rounds(req, rounds_limit)
+        
+        # 控制图片携带轮数
+        self._control_image_carry_rounds(req, image_carry_rounds)
     
     @filter.on_llm_request(priority=-10000)
     async def on_req_llm_clear_prompt(self, event: AstrMessageEvent, req: ProviderRequest):
