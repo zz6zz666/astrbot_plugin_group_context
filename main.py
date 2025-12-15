@@ -305,98 +305,31 @@ class GroupContextPlugin(Star):
 
         datetime_str = datetime.datetime.now().strftime("%H:%M:%S")
         
-        # 创建当前消息的多模态内容列表
-        current_message_content = []
-        
-        # 合并后的完整文本内容，只有遇到图片时才插入image_url块
-        full_text = f"[{event.message_obj.sender.nickname}/{datetime_str}]: "
+        # 创建当前消息的数据结构
+        message_data = {
+            "text": f"[{event.message_obj.sender.nickname}/{datetime_str}]: ",
+            "image_urls": []
+        }
         
         # 1. 检测并处理合并转发消息
         if self.enable_forward_analysis and IS_AIOCQHTTP:
-
             forward_id = await self._detect_forward_message(event)
-
             if forward_id:
-                # 提取合并转发的原始消息结构，包括位置信息
-                if IS_AIOCQHTTP and isinstance(event, AiocqhttpMessageEvent):
-                    try:
-                        client = event.bot
-                        forward_data = await client.api.call_action('get_forward_msg', id=forward_id)
-                        messages = forward_data.get("messages", [])
-                        
-                        # 添加合并转发前缀
-                        full_text += f"\n{self.forward_prefix}\n\t<begin>\n"
-                        
-                        for message_node in messages:
-                            sender_name = message_node.get("sender", {}).get("nickname", "未知用户")
-                            raw_content = message_node.get("message") or message_node.get("content", [])
-                            
-                            # 发送者名称作为消息开头
-                            full_text += f"{sender_name}: "
-                            
-                            # 解析并合并原始消息结构
-                            for seg in raw_content:
-                                if isinstance(seg, dict):
-                                    seg_type = seg.get("type")
-                                    seg_data = seg.get("data", {})
-                                    
-                                    if seg_type == "text":
-                                        # 合并文本
-                                        full_text += seg_data.get("text", "")
-                                    elif seg_type == "at":
-                                        # @ 也作为文本处理
-                                        full_text += f"[At: {seg_data.get('qq', '')}]"
-                                    elif seg_type == "image":
-                                        img_url = self._extract_image_url(seg_data)
-                                        if img_url:
-                                            if self.enable_image_recognition:
-                                                if self.image_caption:
-                                                    try:
-                                                        caption = await self.get_image_caption(img_url, self.image_caption_provider_id)
-                                                        # 图片描述作为文本处理
-                                                        full_text += f" [图片描述: {caption}]"
-                                                    except Exception as e:
-                                                        logger.error(f"获取图片描述失败: {e}")
-                                                        full_text += " [图片]"
-                                                else:
-                                                    # 遇到图片URL时，先将之前的文本添加到列表
-                                                    if full_text:
-                                                        current_message_content.append({"type": "text", "text": full_text})
-                                                        full_text = ""  # 重置当前文本
-                                                    # 将图片转换为base64编码，使用OpenAI格式
-                                                    image_data = await self._encode_image_bs64(img_url)
-                                                    if image_data:
-                                                        current_message_content.append({"type": "image_url", "image_url": {"url": image_data}})
-                                                    else:
-                                                        # 如果转换失败，使用[图片]占位符
-                                                        full_text += " [图片]"
-                                            else:
-                                                # 关闭视觉开关时，使用[图片]占位符，不换行
-                                                full_text += " [图片]"
-                            
-                            # 添加换行
-                            full_text += "\n"
-                        
-                        # 添加合并转发后缀
-                        full_text += "\t<end>\n"
-                        forward_has_content = True
-                        logger.info(f"检测到合并转发消息，已保留原始结构")
-                    except Exception as e:
-                        logger.error(f"处理合并转发消息失败: {e}")
-                        logger.error(traceback.format_exc())
-                else:
-                    logger.debug("未检测到合并转发消息")
-        else:
-            logger.debug(f"合并转发分析未启用或不支持当前平台")
-
-        # 2. 处理常规消息内容，构建连续的内容流
+                forward_text, forward_images = await self._extract_forward_content(event, forward_id)
+                if forward_text:
+                    message_data["text"] += f"\n{self.forward_prefix}\n\t<begin>\n{forward_text}\n\t<end>\n"
+                if forward_images:
+                    message_data["image_urls"].extend(forward_images)
+        
+        # 2. 处理常规消息内容
+        has_plain_text = False
         for comp in event.message_obj.message:
             if isinstance(comp, Plain):
-                # 合并连续的文本
-                full_text += comp.text
+                message_data["text"] += comp.text
+                has_plain_text = True
             elif isinstance(comp, At):
                 # @ 也作为文本处理
-                full_text += f" [At: {comp.name if hasattr(comp, 'name') else comp.qq}]"
+                message_data["text"] += f" [At: {comp.name if hasattr(comp, 'name') else comp.qq}]"
             elif isinstance(comp, Image):
                 url = self._extract_image_url(comp)
                 if url:
@@ -404,42 +337,28 @@ class GroupContextPlugin(Star):
                         if self.image_caption:
                             try:
                                 caption = await self.get_image_caption(url, self.image_caption_provider_id)
-                                # 图片描述作为文本处理，保持在同一行
-                                full_text += f" [图片描述: {caption}]"
+                                # 图片描述作为文本处理
+                                message_data["text"] += f" [图片描述: {caption}]"
                             except Exception as e:
                                 logger.error(f"获取图片描述失败: {e}")
-                                # 图片描述获取失败时，使用[图片]占位符，保持在同一行
-                                full_text += " [图片]"
+                                message_data["text"] += " [图片]"
                         else:
-                            # 遇到图片URL时，先将之前的文本添加到列表
-                            if full_text:
-                                current_message_content.append({"type": "text", "text": full_text})
-                                full_text = ""  # 重置当前文本
-                            # 将图片转换为base64编码，使用OpenAI格式
-                            image_data = await self._encode_image_bs64(url)
-                            if image_data:
-                                current_message_content.append({"type": "image_url", "image_url": {"url": image_data}})
-                            else:
-                                # 如果转换失败，使用[图片]占位符
-                                full_text += " [图片]"
+                            # 直接保存图片URL
+                            message_data["image_urls"].append(url)
                     else:
-                        # 关闭视觉开关时，使用[图片]占位符，保持在同一行
-                        full_text += " [图片]"
+                        # 关闭视觉开关时，使用[图片]占位符
+                        message_data["text"] += " [图片]"
             elif isinstance(comp, Forward):
                 # 合并转发消息已在前面处理
                 pass
         
-        # 处理最后剩余的文本
-        if full_text:
-            current_message_content.append({"type": "text", "text": full_text})
-        
         # 只有当有实际内容时才添加到会话历史
-        if current_message_content:
-            # 将当前消息的多模态内容添加到会话历史
-            self.session_chats[event.unified_msg_origin].append(current_message_content)
+        if message_data["text"] or message_data["image_urls"]:
+            # 将当前消息添加到会话历史
+            self.session_chats[event.unified_msg_origin].append(message_data)
             
             # 调试日志
-            logger.debug(f"群聊上下文 | {event.unified_msg_origin} | 添加了一条包含 {len(current_message_content)} 个组件的消息")
+            logger.debug(f"群聊上下文 | {event.unified_msg_origin} | 添加了一条消息，包含文本: {bool(message_data['text'])}, 图片: {len(message_data['image_urls'])}")
 
     async def _encode_image_bs64(self, image_url: str) -> str:
         """将图片转换为 base64 编码
@@ -638,41 +557,25 @@ class GroupContextPlugin(Star):
         # 将 system 消息添加到上下文
         req.contexts.append({"role": "system", "content": system_message})
 
-        # 构建会话历史 - 转换为OpenAI兼容的多模态格式
-        combined_content = []
-        # 同时构建纯文本prompt，图片用[图片]占位
-        text_prompt_parts = []
-        
+        # 使用框架原生的contexts字段处理文本和图片，保持正确的顺序
         for message in self.session_chats[event.unified_msg_origin]:
-            combined_content.extend(message)
+            # 构建当前消息的content
+            content = []
             
-            # 构建纯文本prompt部分
-            text_part = ""
-            for comp in message:
-                if comp["type"] == "text":
-                    text_part += comp["text"]
-                elif comp["type"] == "image_url":
-                    text_part += " [图片]"
+            # 添加文本内容
+            if message["text"]:
+                content.append({"type": "text", "text": message["text"]})
             
-            if text_part.strip():
-                text_prompt_parts.append(text_part.strip())
+            # 添加图片URL
+            for image_url in message["image_urls"]:
+                content.append({"type": "image_url", "image_url": {"url": image_url}})
+            
+            # 只有当有实际内容时才添加到contexts中
+            if content:
+                req.contexts.append({"role": "user", "content": content})
         
-        # 构建纯文本prompt，用---分割（允许其他插件的llm+request钩子获取prompt内容）
-        req.prompt = ""
-        if text_prompt_parts:
-            req.prompt = "\n---\n".join(text_prompt_parts)
-        
-        logger.debug(f"构建的prompt: \n{req.prompt}")
+        logger.debug(f"构建的contexts: {req.contexts}")
 
-        # 创建用户角色的多模态消息
-        user_message = {
-            "role": "user",
-            "content": combined_content
-        }
-        
-        # 将用户消息添加到上下文
-        req.contexts.append(user_message)
-        
         # 清空该会话的历史记录，只保留上一次请求过后的群聊消息
         self.session_chats[event.unified_msg_origin].clear()
 
@@ -694,8 +597,7 @@ class GroupContextPlugin(Star):
         # 控制图片携带轮数
         self._control_image_carry_rounds(req, image_carry_rounds)
     
-    @filter.on_llm_request(priority=-10000)
-    async def on_req_llm_clear_prompt(self, event: AstrMessageEvent, req: ProviderRequest):
+    
         """在所有插件处理完后，将prompt清空，并清除上下文中空的user字段"""
         # 只有群聊场景下才执行操作
         if event.get_message_type() != MessageType.GROUP_MESSAGE:
