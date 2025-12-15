@@ -26,7 +26,7 @@ except ImportError:
 优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述等功能
 """
 
-@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.2.0")
+@register("group_context", "zz6zz666", "优化群聊上下文增强功能,提供群聊记录追踪、主动回复、图片描述、合并转发、指令过滤等功能", "1.4.0")
 class GroupContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -524,49 +524,62 @@ class GroupContextPlugin(Star):
         return random.random() < ar_possibility
 
     def _control_conversation_rounds(self, req: ProviderRequest, rounds_limit: int):
-        """控制对话轮数，保留最近N轮user/assistant消息对"""
+        """控制对话轮数，保留最近N轮对话"""
         if not req.contexts or rounds_limit <= 0:
             return
             
-        # 统计当前contexts中的user/assistant消息对数量
-        pair_count = sum(1 for ctx in req.contexts if ctx.get("role") == "assistant")
-
-        # 如果超过轮数限制，找到最后一个需要删除的assistant消息位置
-        if pair_count > rounds_limit:
-            # 需要删除的assistant消息数量
-            remove_count = pair_count - rounds_limit
-            assistant_count = 0
-            cut_index = 0
-
-            # 从前往后找到第 remove_count 个 assistant 消息的位置
-            for i, ctx in enumerate(req.contexts):
-                if ctx.get("role") == "assistant":
-                    assistant_count += 1
-                    if assistant_count == remove_count:
-                        cut_index = i + 1  # 在这个assistant之后切割
-                        break
-
-            # 删除cut_index之前的所有消息
-            req.contexts = req.contexts[cut_index:]
+        # 使用简单逻辑找到所有轮次的结束位置：当上一条是a而下一条是u/s即意味着轮的分割
+        round_ends = []
+        
+        # 遍历所有消息，找到a->u/s的转换点
+        for i in range(len(req.contexts) - 1):
+            current_role = req.contexts[i].get("role")
+            next_role = req.contexts[i + 1].get("role")
+            
+            # 如果当前是assistant，下一个是user或system，则当前assistant是轮次结束
+            if current_role == "assistant" and next_role in ["user", "system"]:
+                round_ends.append(i)
+        
+        # 处理最后一个消息：如果最后一个是assistant，它也是一个轮次的结束
+        if req.contexts and req.contexts[-1].get("role") == "assistant":
+            round_ends.append(len(req.contexts) - 1)
+        
+        # 如果轮次数量超过限制，找到需要保留的起始位置
+        if len(round_ends) > rounds_limit:
+            # 找到倒数第rounds_limit轮的开始位置
+            keep_start_index = round_ends[-rounds_limit]
+            # 保留从keep_start_index开始的所有消息
+            req.contexts = req.contexts[keep_start_index:]
     
     def _control_image_carry_rounds(self, req: ProviderRequest, image_carry_rounds: int):
-        """控制图片携带轮数，只保留最后N个user消息中的图片"""
+        """控制图片携带轮数，只保留最后N轮中的图片"""
         if not req.contexts or image_carry_rounds <= 0:
             return
             
-        # 找出所有user角色的消息索引
-        user_indices = [i for i, ctx in enumerate(req.contexts) if ctx.get("role") == "user"]
+        # 使用简单逻辑找到所有轮次的结束位置：当上一条是a而下一条是u/s即意味着轮的分割
+        round_ends = []
         
-        # 如果user消息数量超过image_carry_rounds，只保留最后N个
-        if len(user_indices) > image_carry_rounds:
-            # 需要保留图片的user消息索引
-            keep_indices = user_indices[-image_carry_rounds:]
+        # 遍历所有消息，找到a->u/s的转换点
+        for i in range(len(req.contexts) - 1):
+            current_role = req.contexts[i].get("role")
+            next_role = req.contexts[i + 1].get("role")
             
-            # 遍历所有user消息
-            for i in user_indices:
-                # 如果不是需要保留的user消息，将图片替换为[图片]占位符
-                if i not in keep_indices:
-                    ctx = req.contexts[i]
+            # 如果当前是assistant，下一个是user或system，则当前assistant是轮次结束
+            if current_role == "assistant" and next_role in ["user", "system"]:
+                round_ends.append(i)
+        
+        # 处理最后一个消息：如果最后一个是assistant，它也是一个轮次的结束
+        if req.contexts and req.contexts[-1].get("role") == "assistant":
+            round_ends.append(len(req.contexts) - 1)
+        
+        # 如果轮次数量超过限制，找到需要保留图片的起始轮次
+        if len(round_ends) > image_carry_rounds:
+            # 找到倒数第image_carry_rounds轮的开始位置
+            keep_start_index = round_ends[-image_carry_rounds]
+            
+            # 遍历所有消息，将keep_start_index之前的user消息中的图片替换为[图片]占位符
+            for i, ctx in enumerate(req.contexts):
+                if i < keep_start_index and ctx.get("role") == "user":
                     if isinstance(ctx.get("content"), list):
                         # 创建新的content列表
                         new_content = []
